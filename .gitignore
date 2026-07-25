@@ -175,3 +175,11 @@ run_ids.txt
 # Virtual environments
 *_venv
 *_myenv
+
+# GCP service account keys - NUNCA subir
+zenml-sa.json
+*-sa.json
+
+# AWS CLI installer
+/aws/
+awscliv2.zip
