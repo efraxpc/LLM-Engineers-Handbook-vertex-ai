@@ -21,6 +21,33 @@ A infraestrutura roda no **Google Cloud**:
 
 Um ponto central do projeto: o código Python é agnóstico à nuvem. O ZenML abstrai a infraestrutura (troca-se o *stack*, não o pipeline) e o Firestore fala o protocolo do MongoDB (troca-se a URI de conexão, não a camada ODM baseada em `pymongo`).
 
+## 🏗️ Arquitetura
+
+![Arquitetura do sistema: máquina local → ZenML Cloud → Google Cloud](diagram.png)
+
+O sistema tem **três camadas**, e o diagrama mostra como um `poetry poe run-digital-data-etl` sai da sua máquina e termina executando na nuvem:
+
+**Máquina local (topo)** — onde você trabalha:
+- **Poetry + Poe**: gerencia as dependências (grupos `gcp`, `aws`, `dev`) e expõe as tarefas (`poe run-...`).
+- **Click CLI** (`tools/run.py`): um flag por pipeline; lê os parâmetros dos YAMLs em `configs/`.
+- **ZenML client**: compila o DAG do pipeline para o formato KFP e o submete ao Vertex.
+- **Docker + gcloud**: constroem e enviam a imagem — a autenticação do Docker é **por domínio de registry** (`gcloud auth configure-docker`).
+
+Daqui saem os dois fluxos de subida: **(1)** o `docker push` da imagem para o Artifact Registry e **(2)** a submissão do pipeline (com os segredos já exportados) para o ZenML.
+
+**ZenML Cloud (meio)** — o plano de controle; aqui não roda código, apenas coordenação:
+- **Stack `gcp-stack`**: a "receita" que diz onde executar (Vertex), onde guardar artefatos (GCS) e de onde puxar a imagem (registry), tudo autenticado pelo `gcp_connector`.
+- **Secret store**: entrega as credenciais (Firestore, OpenAI etc.) aos passos remotos em tempo de execução — por isso **nenhum segredo vai dentro da imagem**.
+- **Runs dashboard**: histórico de execuções, artefatos e linhagem.
+
+**Google Cloud (base)** — onde o trabalho acontece de fato. O fluxo **(3)** é o ZenML criando o job no Vertex, que puxa a imagem do Artifact Registry:
+- **Artifact Registry**: guarda a imagem `llmtwin:latest`. Com `skip_build: True`, quem a envia é você — o ZenML só a referencia.
+- **IAM / Service Agent**: o detalhe traiçoeiro — o *service agent* do Vertex (conta da própria Google) precisa do papel *Artifact Registry Reader* para conseguir puxar a imagem; sem isso o job morre ao nascer.
+- **Vertex AI Pipelines**: o orquestrador serverless. Cada passo do DAG (`get_or_create_user` → `crawl_links`) roda em um **contêiner efêmero próprio** — por isso a imagem precisa conter também as dependências do stack (`kfp`, `google-cloud-pipeline-components`), não só as do seu código.
+- **Firestore** (compatibilidade MongoDB): onde o crawler grava os documentos — o `pymongo` do código nem percebe que não é um MongoDB.
+- **Cloud Storage**: o artifact store — resultados intermediários de cada passo e o `pipeline_root` do Vertex.
+- **Cloud Logging**: onde estão os **erros reais** dos passos (`gcloud logging read`); o log local só aponta qual tarefa do DAG falhou.
+
 ## 🗂️ Estrutura do projeto
 
 ```bash
